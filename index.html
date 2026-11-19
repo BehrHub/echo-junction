@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Echo Junction</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#14213D">
+<meta name="robots" content="noindex, nofollow">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="icon" href="icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Echo Junction">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<style>
+  html, body { margin: 0; height: 100%; background: #14213D; color: #FFFFFF; font-family: "Overpass", "Helvetica Neue", Arial, sans-serif; }
+  body { display: flex; align-items: center; justify-content: center; padding: 24px; box-sizing: border-box; }
+  main { width: min(440px, 100%); text-align: center; }
+  .badge { width: 104px; height: 104px; border-radius: 50%; margin: 0 auto 22px; background: #F2C14E; color: #14213D; display: grid; place-items: center; font: 800 44px/1 "Overpass", "Helvetica Neue", Arial, sans-serif; letter-spacing: 1px; box-shadow: 0 0 0 8px rgba(242,193,78,.22); }
+  h1 { margin: 0 0 8px; font-size: 34px; letter-spacing: .5px; }
+  p { margin: 0 0 22px; font-size: 19px; line-height: 1.4; color: #F4F1E8; }
+  form { display: flex; flex-direction: column; gap: 14px; }
+  input { font-size: 22px; font-weight: 700; font-family: inherit; padding: 16px 18px; border-radius: 14px; border: 3px solid #5C6C99; background: #0E1830; color: #FFFFFF; text-align: center; }
+  input::placeholder { color: #C9D1E8; opacity: 1; }
+  input:focus { outline: none; border-color: #F2C14E; }
+  button { font: 800 22px/1 "Overpass", "Helvetica Neue", Arial, sans-serif; font-family: inherit; padding: 18px 20px 16px; border-radius: 14px; border: 0; background: #F2C14E; color: #14213D; cursor: pointer; }
+  button:disabled { opacity: .55; }
+  #msg { min-height: 28px; margin-top: 18px; font-size: 19px; color: #FFFFFF; }
+  #msg.bad { color: #FFB4A8; font-weight: 700; }
+  .small { margin-top: 26px; font-size: 16px; color: #D9DEEE; }
+  .small a { color: #F2C14E; }
+</style>
+</head>
+<body>
+<main>
+  <div class="badge" aria-hidden="true">EJ</div>
+  <h1>Echo Junction</h1>
+  <p id="lead">Type the family password to start.</p>
+  <form id="f" autocomplete="off">
+    <input id="pw" type="password" placeholder="Password" aria-label="Password" autocapitalize="none" autocorrect="off" spellcheck="false">
+    <button id="go" type="submit">Play</button>
+  </form>
+  <div id="msg" role="status" aria-live="polite"></div>
+  <div class="small" id="small"></div>
+</main>
+<script>
+(function () {
+  "use strict";
+  var SALT = new Uint8Array([138,113,117,177,236,244,249,19,11,100,62,18,186,44,80,98]), ITER = 250000, KEYSTORE = "ej-key";
+  var $ = function (id) { return document.getElementById(id); };
+  var msg = $("msg"), form = $("f"), pw = $("pw"), go = $("go"), lead = $("lead");
+  function say(t, bad) { msg.textContent = t; msg.className = bad ? "bad" : ""; }
+  function store(k, v) { try { if (v === null) localStorage.removeItem(k); else localStorage.setItem(k, v); } catch (e) {} }
+  function fetchKey() { try { return localStorage.getItem(KEYSTORE); } catch (e) { return null; } }
+  function toB64(u) { var s = ""; for (var i = 0; i < u.length; i++) s += String.fromCharCode(u[i]); return btoa(s); }
+  function fromB64(b) { var s = atob(b), u = new Uint8Array(s.length); for (var i = 0; i < s.length; i++) u[i] = s.charCodeAt(i); return u; }
+
+  if (location.hash === "#lock") { store(KEYSTORE, null); history.replaceState(null, "", location.pathname + location.search); }
+
+  if (!window.crypto || !crypto.subtle) { lead.textContent = "This browser can't open the game here."; form.hidden = true; say("Open this page over its https address (not as a saved file).", true); return; }
+  if (typeof DecompressionStream === "undefined") { lead.textContent = "This browser is a little too old."; form.hidden = true; say("Please update the browser (Safari 16.4 or newer, or a recent Chrome).", true); return; }
+
+  if ("serviceWorker" in navigator) { try { navigator.serviceWorker.register("sw.js").catch(function () {}); } catch (e) {} }
+
+  var blobP = null;
+  function getBlob() {
+    if (!blobP) blobP = fetch("game.enc", { cache: "no-cache" }).then(function (r) { if (!r.ok) throw new Error("http " + r.status); return r.arrayBuffer(); }).then(function (b) { return new Uint8Array(b); });
+    return blobP;
+  }
+  function deriveKey(pass) {
+    return crypto.subtle.importKey("raw", new TextEncoder().encode(pass), "PBKDF2", false, ["deriveBits"]).then(function (k) {
+      return crypto.subtle.deriveBits({ name: "PBKDF2", salt: SALT, iterations: ITER, hash: "SHA-256" }, k, 256);
+    }).then(function (bits) { return new Uint8Array(bits); });
+  }
+  function decrypt(keyBytes, data) {
+    return crypto.subtle.importKey("raw", keyBytes, "AES-GCM", false, ["decrypt"]).then(function (key) {
+      return crypto.subtle.decrypt({ name: "AES-GCM", iv: data.slice(0, 12) }, key, data.slice(12));
+    }).then(function (plain) {
+      return new Response(new Blob([plain]).stream().pipeThrough(new DecompressionStream("gzip"))).text();
+    });
+  }
+  function start(html) {
+    document.open(); document.write(html); document.close();
+    // keep the home-screen icon and name working after the game replaces this page's head
+    setTimeout(function () {
+      try {
+        var h = document.head;
+        [["link", { rel: "manifest", href: "manifest.json" }], ["link", { rel: "apple-touch-icon", href: "apple-touch-icon.png" }], ["meta", { name: "apple-mobile-web-app-capable", content: "yes" }], ["meta", { name: "mobile-web-app-capable", content: "yes" }], ["meta", { name: "apple-mobile-web-app-title", content: "Echo Junction" }]].forEach(function (p) {
+          var e = document.createElement(p[0]); for (var k in p[1]) e.setAttribute(k, p[1][k]); h.appendChild(e);
+        });
+      } catch (e) {}
+    }, 0);
+  }
+  function openWith(keyBytes) {
+    return getBlob().then(function (d) { return decrypt(keyBytes, d); });
+  }
+  function showForm(note) { form.hidden = false; lead.textContent = "Type the family password to start."; go.disabled = false; pw.disabled = false; if (note) say(note, true); else say(""); try { pw.focus(); } catch (e) {} }
+  function offlineNote(e) { return (e && /http|Failed to fetch|NetworkError|Load failed/i.test(String(e.message || e))) ? "Couldn't download the game. The first visit needs the internet." : ""; }
+
+  var saved = fetchKey();
+  if (saved) {
+    form.hidden = true; lead.textContent = "Starting Echo Junction…";
+    var kb; try { kb = fromB64(saved); } catch (e) { kb = null; }
+    (kb ? openWith(kb) : Promise.reject(new Error("badkey"))).then(start).catch(function (e) {
+      var off = offlineNote(e);
+      if (off) { lead.textContent = "No connection."; say(off, true); form.hidden = true; return; }
+      store(KEYSTORE, null); showForm("The game was updated. Please type the password again.");
+    });
+  } else { showForm(""); }
+
+  form.addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    var pass = pw.value; if (!pass) { say("Type the password first.", true); return; }
+    go.disabled = true; pw.disabled = true; say("Unlocking…");
+    var kbytes;
+    deriveKey(pass).then(function (kb) { kbytes = kb; say("Loading the game…"); return openWith(kb); }).then(function (html) {
+      store(KEYSTORE, toB64(kbytes)); start(html);
+    }).catch(function (e) {
+      var off = offlineNote(e);
+      go.disabled = false; pw.disabled = false;
+      say(off || "That's not the password. Try again.", true); pw.select();
+    });
+  });
+})();
+</script>
+</body>
+</html>
